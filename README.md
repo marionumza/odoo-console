@@ -1,6 +1,6 @@
 # 🛍️ Odoo Console - Gestión de Ventas desde la Consola
 
-Script en Python para operar con Odoo desde la línea de comandos, permitiendo crear órdenes de venta, confirmarlas y generar facturas automáticamente usando tipos de pedido personalizados.
+Script en Python para operar con Odoo desde la línea de comandos, permitiendo crear órdenes de venta, confirmarlas, generar facturas automáticamente y **descargar PDFs** usando tipos de pedido personalizados.
 
 ## 📋 Características
 
@@ -9,6 +9,8 @@ Script en Python para operar con Odoo desde la línea de comandos, permitiendo c
 - ✅ **Creación de órdenes de venta** con o sin tipos específicos
 - ✅ **Confirmación automática** de pedidos
 - ✅ **Facturación automática** usando tipos de pedido configurados
+- ✅ **Generación automática de PDFs** de facturas
+- ✅ **Descarga inteligente de PDFs** con múltiples estrategias de búsqueda
 - ✅ **Diagnóstico del sistema** para verificar compatibilidad
 - ✅ **Gestión de tipos de pedido** del módulo `sale_order_type`
 
@@ -110,7 +112,7 @@ El usuario configurado en `.env` debe tener:
 
 ### Ejecución del script
 ```bash
-python odoo_console.py
+python3 odoo_console.py
 ```
 
 ### Menú principal
@@ -125,11 +127,13 @@ python odoo_console.py
 6. Confirmar orden de venta
 7. Crear factura desde orden (manual)
 8. Ver información de orden
-9. Diagnóstico del sistema
+9. Generar PDF de facturas (Enviar e imprimir)
+10. Descargar PDF de facturas del pedido
+11. Diagnóstico del sistema
 0. Salir
 ```
 
-### Flujo recomendado para facturación automática:
+### Flujo recomendado para facturación automática con descarga de PDF:
 
 #### **Paso 1: Verificar datos disponibles**
 ```bash
@@ -167,10 +171,57 @@ Edita `sample_data.json` con IDs reales de tu sistema:
 # 🎉 ¡La factura se creará automáticamente!
 ```
 
-#### **Paso 5: Verificar resultado**
+#### **Paso 5: Descargar PDF de la factura**
+```bash
+👉 Selecciona una opción: 10  # Descargar PDF
+# 📄 El script buscará y descargará automáticamente el PDF
+```
+
+#### **Paso 6: Verificar resultado**
 ```bash
 👉 Selecciona una opción: 8  # Ver información completa
 ```
+
+## 📄 Funcionalidad de Descarga de PDFs
+
+### **🔍 Búsqueda Inteligente de PDFs**
+
+El script implementa **múltiples estrategias** para encontrar y descargar PDFs de facturas:
+
+#### **Estrategia 1: Búsqueda Directa**
+- Busca adjuntos PDF directamente asociados a la factura
+- Más rápido cuando el PDF está correctamente vinculado
+
+#### **Estrategia 2: Generación Automática**
+- Si no encuentra PDFs, simula el botón "Enviar e imprimir" de Odoo
+- Genera el PDF usando el flujo nativo de la aplicación
+- Espera hasta 30 segundos para que aparezca el adjunto
+
+#### **Estrategia 3: Búsqueda Forzada**
+- **Por nombre**: Busca adjuntos que contengan el nombre de la factura
+- **Por fecha**: Busca PDFs creados recientemente (últimos 10 minutos)
+- **En mensajes**: Busca en el chatter de la factura
+- **Relaciones**: Verifica que el PDF esté relacionado con la factura correcta
+
+### **📁 Descarga Automática**
+
+```bash
+# Ejemplo de salida exitosa:
+📄 Descargando PDF de factura ID: 116
+📋 Factura: TI-X 00001-00000001 - Cliente: ADRIANA CORDONI
+🔍 Búsqueda forzada de PDF para factura 116
+📎 Adjuntos por nombre: 1
+   • TI-X 00001-00000001.pdf - Modelo: mail.message - ID: 870
+   ✅ Encontrado en mensaje relacionado con la factura!
+✅ PDF descargado con búsqueda forzada: TI-X 00001-00000001.pdf
+📁 Tamaño: 52847 bytes
+```
+
+### **📂 Ubicación de archivos descargados**
+
+Los PDFs se descargan en el directorio donde ejecutas el script con nombres descriptivos:
+- `TI-X 00001-00000001.pdf` (nombre original)
+- `pedido_GEA-00001_factura_TI-X_00001-00000001.pdf` (nombre detallado)
 
 ## 📁 Estructura de archivos
 
@@ -196,10 +247,34 @@ Si muestra:
 
 ### Verificar configuración
 ```bash
-👉 Selecciona una opción: 9  # Diagnóstico del sistema
+👉 Selecciona una opción: 11  # Diagnóstico del sistema
 ```
 
-### Problemas comunes:
+### Problemas comunes con PDFs:
+
+#### 1. **PDF no se encuentra**
+```
+❌ No se encontraron adjuntos PDF después de 30 segundos
+```
+**Solución:** 
+- Verifica que la factura esté en estado "Publicado"
+- Intenta generar manualmente desde Odoo primero
+- Usa la opción 9 para generar explícitamente
+
+#### 2. **Error de permisos**
+```
+❌ Error descargando PDF: Access denied
+```
+**Solución:** Verificar permisos del usuario para acceder a adjuntos
+
+#### 3. **PDF en ubicación inesperada**
+```
+📧 Adjuntos en mensajes: 1
+✅ Encontrado en mensaje: TI-X 00001-00000001.pdf
+```
+**Solución:** El script automáticamente busca en mensajes del chatter
+
+### Otros problemas comunes:
 
 #### 1. **Error de conexión**
 ```
@@ -219,13 +294,7 @@ Si muestra:
 ```
 **Solución:** Instalar módulo `sale_order_type`
 
-#### 4. **Campos no disponibles**
-```
-❌ Campo auto_invoice no disponible
-```
-**Solución:** Verificar versión del módulo o configurar manualmente
-
-## 📋 Ejemplo de flujo completo
+## 📋 Ejemplo de flujo completo con PDFs
 
 ### Configuración inicial en Odoo:
 1. Instalar `sale_order_type`
@@ -234,7 +303,7 @@ Si muestra:
 
 ### Uso del script:
 ```bash
-python odoo_console.py
+python3 odoo_console.py
 
 # 1. Ver clientes y productos
 👉 1 → Copiar ID de cliente (ej: 42)
@@ -251,7 +320,10 @@ python odoo_console.py
 # 5. Confirmar orden
 👉 6 → ¡Factura creada automáticamente!
 
-# 6. Verificar resultado
+# 6. Descargar PDF
+👉 10 → ¡PDF descargado automáticamente!
+
+# 7. Verificar resultado
 👉 8 → Ver orden y facturas asociadas
 ```
 
@@ -260,12 +332,26 @@ python odoo_console.py
 Al confirmar una orden con tipo de auto-facturación:
 
 ```
-✅ Orden 37 confirmada exitosamente
+✅ Orden 57 confirmada exitosamente
 🎉 ¡Factura(s) creada(s) automáticamente!
-   📄 Factura: INV/2024/0001
-      Estado: draft
-      Origen: S00002
-      Total: $250.00
+   📄 Factura: TI-X 00001-00000001
+      Estado: posted
+      Origen: GEA-00001
+      Total: $302.5
+```
+
+Al descargar el PDF:
+
+```
+📄 DESCARGAR PDFs DE FACTURAS - ORDEN 57
+📋 Descargando facturas del pedido GEA-00001
+✅ PDF encontrado con búsqueda forzada!
+✅ PDF descargado con búsqueda forzada: TI-X 00001-00000001.pdf
+📁 Tamaño: 52847 bytes
+
+✅ Descarga completada. Archivos guardados en el directorio actual.
+📁 Archivos descargados:
+   • TI-X 00001-00000001.pdf
 ```
 
 ## 🛠️ Personalización
@@ -276,14 +362,39 @@ Edita la función `search_sale_order_types()` para incluir campos específicos d
 ### Modificar datos de ejemplo:
 Edita `sample_data.json` para incluir productos y clientes de tu sistema.
 
+### Cambiar ubicación de descarga:
+Modifica la función `download_invoice_pdf()` para especificar un directorio personalizado:
+
+```python
+# Ejemplo para descargar en carpeta específica
+download_path = "/home/usuario/facturas/"
+full_path = os.path.join(download_path, filename)
+with open(full_path, 'wb') as f:
+    f.write(pdf_content)
+```
+
 ### Agregar nuevas funcionalidades:
-El script está diseñado para ser extensible. Puedes agregar nuevas opciones al menú principal.
+El script está diseñado para ser extensible. Puedes agregar:
+- Envío de facturas por email
+- Generación de reportes personalizados
+- Integración con sistemas externos
+
+## 📞 Soporte
+
+Si encuentras problemas:
+1. Ejecuta **opción 11** (Diagnóstico) para información del sistema
+2. Verifica que todos los módulos estén instalados
+3. Confirma que los permisos de usuario sean correctos
+4. Revisa el archivo `.env` con las credenciales correctas
+
+### Debugging de PDFs:
+- Usa **opción 9** para generar explícitamente
+- Verifica en Odoo web que el PDF se genera manualmente
+- Revisa el chatter de la factura por adjuntos
+- Busca en **Configuración > Adjuntos** el archivo
+
 
 Este script demuestra que es posible **operar Odoo completamente desde la consola**, automatizando el flujo completo de:
-- **Creación de órdenes** → **Confirmación** → **Facturación automática**
+- **Creación de órdenes** → **Confirmación** → **Facturación automática** → **Descarga de PDFs**
 
-Este script demuestra que es posible operar Odoo completamente desde la consola, automatizando el flujo completo de:
-
-Creación de órdenes → Confirmación → Facturación automática
-
-Usando la funcionalidad nativa de Odoo con tipos de pedido personalizados, manteniendo toda la trazabilidad y relaciones correctas entre documentos.
+Usando la funcionalidad nativa de Odoo con tipos de pedido personalizados, manteniendo toda la trazabilidad y relaciones correctas entre documentos, y proporcionando acceso directo a los archivos PDF generados.
