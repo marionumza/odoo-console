@@ -1,0 +1,53 @@
+{
+  "sale_order": {
+    "customer_id": 42,
+    "products": [
+      {
+        "product_id": 1,
+        "quantity": 2,
+        "price": 100.00
+      },
+      {
+        "product_id": 2,
+        "quantity": 1,
+        "price": 50.00
+      }
+    ]
+  },
+  "customers_examples": [
+    {
+      "id": 1,
+      "name": "Cliente Ejemplo S.A.",
+      "email": "cliente@ejemplo.com"
+    },
+    {
+      "id": 2,
+      "name": "Distribuidora XYZ",
+      "email": "ventas@xyz.com"
+    }
+  ],
+  "products_examples": [
+    {
+      "id": 1,
+      "name": "Producto Premium",
+      "price": 100.00,
+      "code": "PROD-001"
+    },
+    {
+      "id": 2,
+      "name": "Producto Estándar",
+      "price": 50.00,
+      "code": "PROD-002"
+    },
+    {
+      "id": 3,
+      "name": "Producto Básico",
+      "price": 25.00,
+      "code": "PROD-003"
+    }
+  ],
+  "notes": {
+    "importante": "Los IDs de customer_id y product_id en sale_order deben corresponder a registros existentes en tu instancia de Odoo",
+    "como_obtener_ids": "Usa las opciones 1 y 2 del menú para ver los IDs reales de tu sistema"
+  }
+}
