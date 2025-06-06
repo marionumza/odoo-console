@@ -8,8 +8,10 @@ Ejemplo básico para crear órdenes de venta y realizar operaciones
 import xmlrpc.client
 import json
 import os
+import base64
+import time
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class OdooConnector:
     def __init__(self):
@@ -197,6 +199,7 @@ class OdooConnector:
         except Exception as e:
             print(f"❌ Error creando orden de venta: {e}")
             return None
+    
     def create_sale_order(self, order_data):
         """Crear orden de venta (método legacy para compatibilidad)"""
         return self.create_sale_order_with_type(order_data, None)
@@ -253,6 +256,376 @@ class OdooConnector:
             print(f"❌ Error confirmando orden: {e}")
             return False
     
+    def generate_invoice_pdf(self, invoice_id):
+        """Generar PDF de factura usando el botón 'Enviar e imprimir'"""
+        try:
+            print(f"🔄 Generando PDF para factura ID: {invoice_id}")
+            
+            # Método que SÍ funciona: usar action_send_and_print y completar el wizard
+            try:
+                result = self.execute('account.move', 'action_send_and_print', [invoice_id])
+                print(f"📧 Wizard abierto: {result.get('res_model', 'N/A')}")
+                
+                if result.get('res_model') == 'account.move.send':
+                    # El wizard se abrió correctamente, ahora completarlo
+                    context = result.get('context', {})
+                    template_id = context.get('default_mail_template_id')
+                    
+                    # Crear el wizard con la configuración correcta
+                    wizard_vals = {
+                        'move_ids': [(6, 0, [invoice_id])],
+                        'enable_download': True,
+                        'enable_send_mail': False,  # Solo queremos el PDF, no enviar email
+                    }
+                    
+                    if template_id:
+                        wizard_vals['mail_template_id'] = template_id
+                        print(f"📧 Usando template ID: {template_id}")
+                    
+                    wizard_id = self.execute('account.move.send', 'create', wizard_vals)
+                    
+                    if wizard_id:
+                        print(f"✅ Wizard account.move.send creado con ID: {wizard_id}")
+                        
+                        # Ejecutar la acción de generar/descargar
+                        try:
+                            download_result = self.execute('account.move.send', 'action_send_and_print', [wizard_id])
+                            print(f"📄 Resultado descarga: {type(download_result)}")
+                            
+                        except Exception as e_download:
+                            print(f"Info descarga: {e_download}")
+                            # Intentar método alternativo
+                            try:
+                                download_result = self.execute('account.move.send', 'action_download', [wizard_id])
+                                print(f"📄 Resultado action_download: {type(download_result)}")
+                            except Exception as e_download2:
+                                print(f"Info action_download: {e_download2}")
+                        
+                        print("✅ Wizard ejecutado - PDF debería estar generándose en segundo plano")
+                        return True  # El PDF se está generando, aunque no lo detectemos inmediatamente
+                
+            except Exception as e1:
+                print(f"Método wizard falló: {e1}")
+                return False
+            
+            print("❌ No se pudo ejecutar el wizard")
+            return False
+            
+        except Exception as e:
+            print(f"❌ Error general generando PDF: {e}")
+            return False
+    
+    def find_invoice_attachments(self, invoice_id, show_all=False):
+        """Buscar todos los adjuntos relacionados con una factura"""
+        try:
+            print(f"🔍 Buscando adjuntos para factura ID: {invoice_id}")
+            
+            # Búsqueda amplia de adjuntos relacionados con la factura
+            attachment_filters = [
+                ['res_model', '=', 'account.move'],
+                ['res_id', '=', invoice_id],
+            ]
+            
+            # Si no queremos mostrar todos, filtrar solo PDFs
+            if not show_all:
+                attachment_filters.append(['mimetype', '=', 'application/pdf'])
+            
+            attachments = self.execute('ir.attachment', 'search_read',
+                                     attachment_filters,
+                                     ['name', 'mimetype', 'create_date', 'datas', 'file_size'])
+            
+            print(f"📎 Encontrados {len(attachments)} adjuntos totales")
+            
+            if show_all:
+                # Mostrar todos los adjuntos para debugging
+                for att in attachments:
+                    size = att.get('file_size', 0)
+                    print(f"   • {att['name']} ({att['mimetype']}) - {size} bytes - {att['create_date']}")
+            
+            # Filtrar solo PDFs
+            pdf_attachments = [att for att in attachments if att['mimetype'] == 'application/pdf']
+            print(f"📄 PDFs encontrados: {len(pdf_attachments)}")
+            
+            return pdf_attachments
+            
+        except Exception as e:
+            print(f"❌ Error buscando adjuntos: {e}")
+            return []
+    
+    def wait_for_attachments(self, invoice_id, max_wait=30):
+        """Esperar hasta que aparezcan adjuntos PDF con búsqueda más agresiva"""
+        print(f"⏳ Esperando adjuntos PDF para factura {invoice_id}...")
+        
+        for i in range(max_wait):
+            time.sleep(1)
+            
+            # Búsqueda más específica
+            pdf_attachments = self.find_invoice_attachments(invoice_id)
+            
+            if pdf_attachments:
+                print(f"✅ Adjuntos encontrados después de {i+1} segundos: {len(pdf_attachments)}")
+                return True
+            
+            # Cada 5 segundos, mostrar debug de todos los adjuntos
+            if i > 0 and i % 5 == 0:
+                print(f"🔍 Debug ({i+1}s): Verificando todos los adjuntos...")
+                all_attachments = self.find_invoice_attachments(invoice_id, show_all=True)
+                
+            if i % 5 == 0:  # Mostrar progreso cada 5 segundos
+                print(f"⏳ Esperando... ({i+1}/{max_wait})")
+        
+        print(f"⚠️ Timeout: No se encontraron adjuntos PDF después de {max_wait} segundos")
+        
+        # Último intento mostrando todos los adjuntos
+        print("🔍 Último intento - mostrando todos los adjuntos:")
+        all_attachments = self.find_invoice_attachments(invoice_id, show_all=True)
+        
+        return False
+    
+    def force_find_pdf(self, invoice_id):
+        """Búsqueda forzada de PDFs con diferentes estrategias"""
+        try:
+            print(f"🔍 Búsqueda forzada de PDF para factura {invoice_id}")
+            
+            # Estrategia 1: Buscar por nombre de factura
+            invoice = self.execute('account.move', 'read', [invoice_id], ['name'])[0]
+            invoice_name = invoice['name']
+            print(f"📋 Nombre de factura: {invoice_name}")
+            
+            # Buscar adjuntos que contengan el nombre de la factura
+            name_attachments = self.execute('ir.attachment', 'search_read',
+                                          [['name', 'ilike', invoice_name],
+                                           ['mimetype', '=', 'application/pdf']],
+                                          ['name', 'res_model', 'res_id', 'create_date', 'datas'])
+            
+            print(f"📎 Adjuntos por nombre: {len(name_attachments)}")
+            for att in name_attachments:
+                print(f"   • {att['name']} - Modelo: {att['res_model']} - ID: {att['res_id']}")
+            
+            # Si encontramos adjuntos por nombre, verificar si están en mensajes relacionados
+            if name_attachments:
+                for att in name_attachments:
+                    if att['res_model'] == 'mail.message':
+                        try:
+                            # Verificar si el mensaje está relacionado con nuestra factura
+                            message = self.execute('mail.message', 'read', [att['res_id']], 
+                                                 ['model', 'res_id', 'date'])
+                            if message and len(message) > 0:
+                                msg_data = message[0]
+                                print(f"   📧 Mensaje: modelo={msg_data.get('model')} res_id={msg_data.get('res_id')}")
+                                
+                                # Si el mensaje está relacionado con nuestra factura
+                                if (msg_data.get('model') == 'account.move' and 
+                                    msg_data.get('res_id') == invoice_id):
+                                    print(f"   ✅ Encontrado en mensaje relacionado con la factura!")
+                                    return att
+                                # Si no tiene modelo/res_id específico, también podría ser válido
+                                elif not msg_data.get('model') or msg_data.get('model') == 'account.move':
+                                    print(f"   ✅ Mensaje genérico, pero contiene PDF de la factura!")
+                                    return att
+                        except Exception as e:
+                            print(f"   ⚠️ Error verificando mensaje {att['res_id']}: {e}")
+                    
+                    # Si está directamente en account.move
+                    elif att['res_model'] == 'account.move' and att['res_id'] == invoice_id:
+                        print(f"   ✅ Encontrado directamente en la factura!")
+                        return att
+                
+                # Si no encontramos relación específica, usar el primero por nombre
+                print(f"   📎 Usando primer adjunto por nombre como fallback")
+                return name_attachments[0]
+            
+            # Estrategia 2: Buscar adjuntos recientes (últimos 10 minutos)
+            ten_minutes_ago = (datetime.now() - timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            recent_attachments = self.execute('ir.attachment', 'search_read',
+                                            [['create_date', '>=', ten_minutes_ago],
+                                             ['mimetype', '=', 'application/pdf']],
+                                            ['name', 'res_model', 'res_id', 'create_date', 'datas'])
+            
+            print(f"📅 Adjuntos recientes (últimos 10 min): {len(recent_attachments)}")
+            for att in recent_attachments:
+                print(f"   • {att['name']} - {att['res_model']}.{att['res_id']} - {att['create_date']}")
+                
+                # Buscar por nombre de factura en adjuntos recientes
+                if invoice_name in att['name']:
+                    print(f"   ✅ Adjunto reciente contiene nombre de factura!")
+                    return att
+            
+            # Estrategia 3: Buscar mensajes relacionados con la factura
+            try:
+                # Buscar mensajes específicos de la factura
+                messages = self.execute('mail.message', 'search_read',
+                                      [['model', '=', 'account.move'],
+                                       ['res_id', '=', invoice_id]],
+                                      ['id', 'date', 'attachment_ids'])
+                
+                print(f"📧 Mensajes de la factura: {len(messages)}")
+                
+                for msg in messages:
+                    if msg.get('attachment_ids'):
+                        print(f"   📎 Mensaje {msg['id']} tiene {len(msg['attachment_ids'])} adjuntos")
+                        
+                        # Leer adjuntos del mensaje
+                        msg_attachments = self.execute('ir.attachment', 'search_read',
+                                                     [['id', 'in', msg['attachment_ids']],
+                                                      ['mimetype', '=', 'application/pdf']],
+                                                     ['name', 'create_date', 'datas'])
+                        
+                        for att in msg_attachments:
+                            if invoice_name in att['name']:
+                                print(f"   ✅ PDF encontrado en mensaje de la factura: {att['name']}")
+                                return att
+                        
+            except Exception as e:
+                print(f"Info: No se pudo buscar en mensajes específicos: {e}")
+            
+            print("❌ No se encontró PDF con ninguna estrategia")
+            return None
+            
+        except Exception as e:
+            print(f"❌ Error en búsqueda forzada: {e}")
+            return None
+    
+    def download_invoice_pdf(self, invoice_id, filename=None):
+        """Descargar PDF de la factura con búsqueda mejorada"""
+        try:
+            print(f"📄 Descargando PDF de factura ID: {invoice_id}")
+            
+            # Obtener información de la factura
+            invoice = self.execute('account.move', 'read', [invoice_id], 
+                                 ['name', 'state', 'partner_id'])[0]
+            
+            if not filename:
+                # Generar nombre de archivo automático
+                invoice_name = invoice['name'].replace('/', '_').replace(' ', '_')
+                partner_name = invoice['partner_id'][1].replace(' ', '_')
+                filename = f"factura_{invoice_name}_{partner_name}.pdf"
+            
+            print(f"📋 Factura: {invoice['name']} - Cliente: {invoice['partner_id'][1]}")
+            
+            # Paso 1: Buscar adjuntos PDF directos
+            pdf_attachments = self.find_invoice_attachments(invoice_id)
+            
+            if pdf_attachments:
+                print(f"📎 Encontrados {len(pdf_attachments)} adjuntos PDF existentes")
+                
+                # Usar el adjunto más reciente
+                latest_attachment = max(pdf_attachments, key=lambda x: x['create_date'])
+                
+                pdf_content = base64.b64decode(latest_attachment['datas'])
+                
+                # Usar nombre del adjunto si está disponible
+                if latest_attachment['name'] and latest_attachment['name'].endswith('.pdf'):
+                    filename = latest_attachment['name']
+                
+                with open(filename, 'wb') as f:
+                    f.write(pdf_content)
+                
+                print(f"✅ PDF descargado desde adjuntos directos: {filename}")
+                print(f"📁 Tamaño: {len(pdf_content)} bytes")
+                print(f"📅 Creado: {latest_attachment['create_date']}")
+                return filename
+            
+            # Paso 2: Generar PDF y esperar
+            print("📎 No se encontraron adjuntos PDF directos. Generando...")
+            
+            if self.generate_invoice_pdf(invoice_id):
+                print("🔄 PDF generado. Esperando que aparezca...")
+                
+                # Esperar con búsqueda mejorada
+                if self.wait_for_attachments(invoice_id, max_wait=30):
+                    # Buscar nuevamente después de la espera
+                    new_pdf_attachments = self.find_invoice_attachments(invoice_id)
+                    
+                    if new_pdf_attachments:
+                        latest_attachment = max(new_pdf_attachments, key=lambda x: x['create_date'])
+                        
+                        pdf_content = base64.b64decode(latest_attachment['datas'])
+                        
+                        if latest_attachment['name'] and latest_attachment['name'].endswith('.pdf'):
+                            filename = latest_attachment['name']
+                        
+                        with open(filename, 'wb') as f:
+                            f.write(pdf_content)
+                        
+                        print(f"✅ PDF descargado después de generación: {filename}")
+                        print(f"📁 Tamaño: {len(pdf_content)} bytes")
+                        return filename
+                
+                # Paso 3: Búsqueda forzada como último recurso
+                print("🔍 Intentando búsqueda forzada...")
+                forced_attachment = self.force_find_pdf(invoice_id)
+                
+                if forced_attachment and 'datas' in forced_attachment:
+                    print("✅ PDF encontrado con búsqueda forzada!")
+                    
+                    pdf_content = base64.b64decode(forced_attachment['datas'])
+                    
+                    if forced_attachment['name'] and forced_attachment['name'].endswith('.pdf'):
+                        filename = forced_attachment['name']
+                    
+                    with open(filename, 'wb') as f:
+                        f.write(pdf_content)
+                    
+                    print(f"✅ PDF descargado con búsqueda forzada: {filename}")
+                    print(f"📁 Tamaño: {len(pdf_content)} bytes")
+                    return filename
+                else:
+                    print("❌ No se pudo encontrar el PDF con búsqueda forzada")
+                    
+            else:
+                print("❌ No se pudo generar el PDF")
+            
+            # Paso 4: Información para debugging manual
+            print("\n🔧 INFORMACIÓN DE DEBUG:")
+            print(f"   ID de factura: {invoice_id}")
+            print(f"   Nombre de factura: {invoice['name']}")
+            print("   Puedes buscar manualmente en Odoo:")
+            print("   1. Ve a la factura en Odoo")
+            print("   2. Revisa el chatter por adjuntos")
+            print("   3. Busca en Configuración > Adjuntos")
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Error descargando PDF: {e}")
+            return None
+    
+    def download_order_invoices(self, order_id):
+        """Descargar PDFs de todas las facturas de un pedido"""
+        try:
+            # Obtener facturas del pedido
+            order = self.execute('sale.order', 'read', [order_id], 
+                               ['name', 'invoice_ids'])[0]
+            
+            if not order.get('invoice_ids'):
+                print("❌ No hay facturas asociadas a este pedido")
+                return []
+            
+            print(f"📋 Descargando facturas del pedido {order['name']}")
+            downloaded_files = []
+            
+            for invoice_id in order['invoice_ids']:
+                # Generar nombre único para cada factura
+                invoice = self.execute('account.move', 'read', [invoice_id], ['name'])[0]
+                invoice_name = invoice['name'].replace('/', '_')
+                filename = f"pedido_{order['name'].replace('/', '_')}_factura_{invoice_name}.pdf"
+                
+                result = self.download_invoice_pdf(invoice_id, filename)
+                if result:
+                    downloaded_files.append(result)
+                    
+            print(f"\n📁 Descargados {len(downloaded_files)} archivos:")
+            for file in downloaded_files:
+                print(f"  • {file}")
+                
+            return downloaded_files
+            
+        except Exception as e:
+            print(f"❌ Error descargando facturas del pedido: {e}")
+            return []
+    
     def create_invoice(self, order_id):
         """Crear factura desde orden de venta usando el flujo nativo de Odoo"""
         try:
@@ -306,59 +679,8 @@ class OdooConnector:
             except Exception as e1:
                 print(f"Método wizard con contexto falló: {e1}")
             
-            # Método 2: Intentar directamente con el botón "Crear Factura"
-            try:
-                # Simular el clic en el botón "Crear Factura" desde la vista de formulario
-                context = {
-                    'active_model': 'sale.order',
-                    'active_ids': [order_id],
-                    'active_id': order_id,
-                    'default_journal_id': False,
-                }
-                
-                # Buscar si existe un wizard abierto
-                wizard_model = 'sale.advance.payment.inv'
-                wizard_vals = {
-                    'advance_payment_method': 'delivered',
-                }
-                
-                wizard_id = self.execute(wizard_model, 'create', wizard_vals)
-                
-                # Ejecutar con contexto específico
-                self.execute(wizard_model, 'with_context', context, 'create_invoices', [wizard_id])
-                
-                # Verificar resultado
-                updated_order = self.execute('sale.order', 'read', [order_id], ['invoice_ids'])[0]
-                if updated_order['invoice_ids']:
-                    print(f"✅ Factura creada con método directo")
-                    return updated_order['invoice_ids'][0]
-                    
-            except Exception as e2:
-                print(f"Método directo falló: {e2}")
-            
-            # Método 3: Usar action_invoice_create (si existe en versiones más antiguas)
-            try:
-                # Para versiones más antiguas de Odoo
-                invoice_id = self.execute('sale.order', 'action_invoice_create', [order_id])
-                if invoice_id:
-                    print(f"✅ Factura creada con método legacy: {invoice_id}")
-                    return invoice_id
-                    
-            except Exception as e3:
-                print(f"Método legacy falló: {e3}")
-            
-            # Método 4: Llamar directamente el botón desde la interfaz
-            try:
-                # Simular llamada al botón específico
-                result = self.execute('sale.order', 'action_quotation_send', [order_id])
-                print(f"Resultado action_quotation_send: {result}")
-                
-            except Exception as e4:
-                print(f"Método action falló: {e4}")
-            
             print("❌ No se pudo crear la factura usando los métodos nativos de Odoo")
             print("💡 Intenta crear la factura manualmente desde la interfaz web de Odoo")
-            print("   para verificar que la configuración del sistema permita la facturación")
             return None
                 
         except Exception as e:
@@ -373,53 +695,6 @@ class OdooConnector:
         except Exception as e:
             print(f"Error obteniendo campos de {model_name}: {e}")
             return []
-    
-    def check_invoice_methods(self):
-        """Verificar métodos disponibles para facturación"""
-        try:
-            print("\n🔍 MÉTODOS DE FACTURACIÓN DISPONIBLES:")
-            print("-" * 50)
-            
-            # Obtener todos los métodos del modelo sale.order
-            try:
-                # Intentar obtener información del modelo
-                model_info = self.execute('sale.order', 'fields_get', [])
-                print(f"✅ Modelo sale.order accesible")
-                
-                # Verificar métodos específicos de facturación
-                methods_to_check = [
-                    'action_invoice_create',
-                    '_create_invoices', 
-                    'action_quotation_send',
-                    'create_invoices',
-                ]
-                
-                for method in methods_to_check:
-                    try:
-                        # Intentar llamar el método con una orden inexistente para ver si existe
-                        self.execute('sale.order', method, [99999])
-                    except Exception as e:
-                        if "does not exist" in str(e):
-                            print(f"❌ {method}: No disponible")
-                        elif "not found" in str(e):
-                            print(f"❌ {method}: No encontrado")
-                        else:
-                            print(f"✅ {method}: Disponible (error esperado con ID inválido)")
-                
-                # Verificar wizard de advance payment
-                try:
-                    wizard_info = self.execute('sale.advance.payment.inv', 'fields_get', [])
-                    print(f"✅ Wizard sale.advance.payment.inv: Disponible")
-                except Exception as e:
-                    print(f"❌ Wizard sale.advance.payment.inv: No disponible - {e}")
-                    
-            except Exception as e:
-                print(f"❌ Error verificando métodos: {e}")
-                
-            print("-" * 50)
-            
-        except Exception as e:
-            print(f"Error en verificación: {e}")
     
     def diagnose_system(self):
         """Diagnosticar sistema Odoo"""
@@ -467,6 +742,8 @@ class OdooConnector:
                                 print(f"    - Factura {inv_data['name']}: {inv_data['state']} - ${inv_data['amount_total']}")
                         except Exception:
                             print(f"    - Factura ID {invoice_id}: (no se pudo leer)")
+                    
+                    print(f"  💡 Usa la opción 10 para descargar los PDFs de las facturas")
                 else:
                     print(f"  Facturas asociadas: 0")
                     
@@ -501,7 +778,9 @@ def show_menu():
     print("6. Confirmar orden de venta")
     print("7. Crear factura desde orden (manual)")
     print("8. Ver información de orden")
-    print("9. Diagnóstico del sistema")
+    print("9. Generar PDF de facturas (Enviar e imprimir)")
+    print("10. Descargar PDF de facturas del pedido")
+    print("11. Diagnóstico del sistema")
     print("0. Salir")
     print("="*50)
 
@@ -609,6 +888,49 @@ def main():
                 print("❌ No hay orden activa. Crea una orden primero.")
                 
         elif choice == '9':
+            if current_order_id:
+                print(f"\n📧 GENERAR PDF DE FACTURAS - ORDEN {current_order_id}")
+                # Obtener facturas del pedido
+                order = odoo.execute('sale.order', 'read', [current_order_id], ['invoice_ids'])[0]
+                
+                if order.get('invoice_ids'):
+                    print(f"📋 Procesando {len(order['invoice_ids'])} factura(s)...")
+                    success_count = 0
+                    
+                    for invoice_id in order['invoice_ids']:
+                        print(f"\n🔄 Generando PDF para factura ID: {invoice_id}")
+                        if odoo.generate_invoice_pdf(invoice_id):
+                            success_count += 1
+                    
+                    print(f"\n📊 Resultado:")
+                    print(f"✅ PDFs iniciados: {success_count}/{len(order['invoice_ids'])}")
+                    if success_count > 0:
+                        print("💡 Los PDFs se están generando en segundo plano")
+                        print("💡 Usa la opción 10 para descargar cuando estén listos")
+                    else:
+                        print("❌ No se pudo iniciar la generación de PDFs")
+                else:
+                    print("❌ No hay facturas asociadas a este pedido")
+            else:
+                print("❌ No hay orden activa. Crea una orden primero.")
+                
+        elif choice == '10':
+            if current_order_id:
+                print(f"\n📄 DESCARGAR PDFs DE FACTURAS - ORDEN {current_order_id}")
+                downloaded = odoo.download_order_invoices(current_order_id)
+                if downloaded:
+                    print(f"\n✅ Descarga completada. Archivos guardados en el directorio actual.")
+                    print("📁 Archivos descargados:")
+                    for file in downloaded:
+                        print(f"   • {file}")
+                else:
+                    print("❌ No se pudo descargar ningún archivo")
+                    print("💡 Asegúrate de haber ejecutado la opción 9 primero")
+                    print("💡 Los PDFs pueden tardar unos minutos en generarse")
+            else:
+                print("❌ No hay orden activa. Crea una orden primero.")
+                
+        elif choice == '11':
             print("\n🔍 EJECUTANDO DIAGNÓSTICO...")
             odoo.diagnose_system()
                 
